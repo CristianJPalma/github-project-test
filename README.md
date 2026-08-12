@@ -1,1 +1,3 @@
-# github-project-test
+## HU-001
+
+Prueba del flujo automatizado Dev → QA → Main.
