@@ -1,3 +1,3 @@
-## HU-001
+## HU-002
 
-Prueba del flujo automatizado Dev → QA → Main.
+Prueba del flujo automatizado
