@@ -41,10 +41,4 @@ jobs:
                 }
               }' \
             -f owner="$OWNER" \
-            -F number="$PROJECT_NUMBER" \
-            > project_data.json
-
-      - name: Show Project data
-        run: |
-          echo "===== PROJECT DATA ====="
-          cat project_data.json
+            -F number="$PROJECT_NUMBER"
