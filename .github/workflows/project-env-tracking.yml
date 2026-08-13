@@ -10,9 +10,10 @@ permissions:
 
 jobs:
   update-project:
-    # Solo ejecutamos para PRs que:
-    # - fueron abiertos/reabiertos
-    # - o fueron cerrados por merge
+    # Ejecutar cuando:
+    # - el PR se abre
+    # - el PR se reabre
+    # - el PR se cierra después de un merge
     if: |
       github.event.action == 'opened' ||
       github.event.action == 'reopened' ||
@@ -32,19 +33,28 @@ jobs:
           script: |
             const PROJECT_ID = 'PVT_kwHOCkkGd84Az9vm';
 
+            // ---------------------------------------------------------
             // Project fields
+            // ---------------------------------------------------------
+
             const STATUS_FIELD =
               'PVTSSF_lAHOCkkGd84Az9vmzgpq9ys';
 
             const ENVIRONMENT_FIELD =
               'PVTSSF_lAHOCkkGd84Az9vmzhaaI9k';
 
+            // ---------------------------------------------------------
             // Status options
+            // ---------------------------------------------------------
+
             const STATUS_IN_REVIEW = '61d25113';
             const STATUS_IN_PROGRESS = '47fc9ee4';
             const STATUS_DONE = '98236657';
 
+            // ---------------------------------------------------------
             // Environment options
+            // ---------------------------------------------------------
+
             const ENV_DEV = '90d0f115';
             const ENV_QA = 'ffaf1160';
             const ENV_PRODUCTION = '9266a477';
@@ -65,62 +75,94 @@ jobs:
             core.info(`Merged: ${merged}`);
 
             // ---------------------------------------------------------
-            // Determinar Environment según la rama destino
-            // ---------------------------------------------------------
-
-            let environmentOption;
-
-            switch (base) {
-              case 'dev':
-                environmentOption = ENV_DEV;
-                break;
-
-              case 'qa':
-                environmentOption = ENV_QA;
-                break;
-
-              case 'main':
-                environmentOption = ENV_PRODUCTION;
-                break;
-
-              default:
-                core.info(
-                  `La rama '${base}' no está contemplada.`
-                );
-                return;
-            }
-
-            // ---------------------------------------------------------
-            // Determinar Status según el evento
+            // Determinar Status y Environment
+            //
+            // PR abierto/reabierto:
+            //
+            //   -> In Review
+            //   -> Environment = ambiente del PR
+            //
+            // PR mergeado a dev:
+            //
+            //   -> In Progress
+            //   -> Environment = QA
+            //
+            // PR mergeado a qa:
+            //
+            //   -> In Progress
+            //   -> Environment = Production
+            //
+            // PR mergeado a main:
+            //
+            //   -> Done
+            //   -> Environment = Production
             // ---------------------------------------------------------
 
             let statusOption;
             let statusName;
+            let environmentOption;
+            let environmentName;
 
             if (action === 'opened' || action === 'reopened') {
+
               statusOption = STATUS_IN_REVIEW;
               statusName = 'In Review';
 
-            } else if (action === 'closed' && merged) {
-
-              // Para esta prueba:
-              // dev y qa -> In Progress
-              // main      -> Done
-
               switch (base) {
+
                 case 'dev':
-                  statusOption = STATUS_IN_PROGRESS;
-                  statusName = 'In Progress';
+                  environmentOption = ENV_DEV;
+                  environmentName = 'Dev';
                   break;
 
                 case 'qa':
-                  statusOption = STATUS_IN_PROGRESS;
-                  statusName = 'In Progress';
+                  environmentOption = ENV_QA;
+                  environmentName = 'QA';
                   break;
 
                 case 'main':
+                  environmentOption = ENV_PRODUCTION;
+                  environmentName = 'Production';
+                  break;
+
+                default:
+                  core.info(
+                    `La rama '${base}' no está contemplada.`
+                  );
+                  return;
+              }
+
+            } else if (action === 'closed' && merged) {
+
+              switch (base) {
+
+                case 'dev':
+                  // Dev ya terminó.
+                  // La siguiente etapa es QA.
+                  statusOption = STATUS_IN_PROGRESS;
+                  statusName = 'In Progress';
+
+                  environmentOption = ENV_QA;
+                  environmentName = 'QA';
+                  break;
+
+                case 'qa':
+                  // QA ya terminó.
+                  // La siguiente etapa es Production.
+                  statusOption = STATUS_IN_PROGRESS;
+                  statusName = 'In Progress';
+
+                  environmentOption = ENV_PRODUCTION;
+                  environmentName = 'Production';
+                  break;
+
+                case 'main':
+                  // La HU llegó a producción.
                   statusOption = STATUS_DONE;
                   statusName = 'Done';
+
+                  environmentOption = ENV_PRODUCTION;
+                  environmentName = 'Production';
                   break;
 
                 default:
@@ -131,8 +173,9 @@ jobs:
               }
 
             } else {
+
               core.info(
-                `Evento no requiere actualización.`
+                'Evento no requiere actualización.'
               );
               return;
             }
@@ -141,11 +184,16 @@ jobs:
               `Status seleccionado: ${statusName}`
             );
 
+            core.info(
+              `Environment seleccionado: ${environmentName}`
+            );
+
             // ---------------------------------------------------------
             // Buscar Issue/HU referenciada en el PR
+            //
             // Formato esperado:
             //
-            // github-project-test#9
+            // github-project-test#11
             // ---------------------------------------------------------
 
             const text = `${pr.title}\n${pr.body || ''}`;
@@ -158,15 +206,18 @@ jobs:
             let match;
 
             while ((match = regex.exec(text)) !== null) {
+
               issueNumbers.add(
                 parseInt(match[1], 10)
               );
             }
 
             if (!issueNumbers.size) {
+
               core.warning(
                 `No se encontró una referencia ${repo}#N en el PR.`
               );
+
               return;
             }
 
@@ -260,14 +311,16 @@ jobs:
                   result.repository.issue;
 
                 if (!issue) {
+
                   core.warning(
                     `Issue #${issueNumber} no existe.`
                   );
+
                   continue;
                 }
 
                 // -------------------------------------------------------
-                // Buscar la tarjeta de esa Issue dentro de nuestro Project
+                // Buscar la tarjeta de esa Issue dentro del Project
                 // -------------------------------------------------------
 
                 const item =
@@ -277,9 +330,11 @@ jobs:
                   );
 
                 if (!item) {
+
                   core.warning(
                     `Issue #${issueNumber} no está en el Project.`
                   );
+
                   continue;
                 }
 
@@ -314,13 +369,6 @@ jobs:
                   ENVIRONMENT_FIELD,
                   environmentOption
                 );
-
-                const environmentName =
-                  base === 'dev'
-                    ? 'Dev'
-                    : base === 'qa'
-                      ? 'QA'
-                      : 'Production';
 
                 core.info(
                   `Issue #${issueNumber}: Environment = ${environmentName}`
