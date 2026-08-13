@@ -1,0 +1,50 @@
+name: Project Debug
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug-project:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get Project data
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          OWNER: CristianJPalma
+          PROJECT_NUMBER: 2
+        run: |
+          gh api graphql \
+            -f query='
+              query($owner: String!, $number: Int!) {
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    title
+                    fields(first: 30) {
+                      nodes {
+                        ... on ProjectV2Field {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }' \
+            -f owner="$OWNER" \
+            -F number="$PROJECT_NUMBER" \
+            > project_data.json
+
+      - name: Show Project data
+        run: |
+          echo "===== PROJECT DATA ====="
+          cat project_data.json
