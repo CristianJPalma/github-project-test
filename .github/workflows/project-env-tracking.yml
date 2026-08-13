@@ -2,52 +2,165 @@ name: Project env tracking
 
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, closed]
+    branches: [dev, qa, main]
 
 permissions:
   contents: read
 
 jobs:
   update-project:
+    # Solo ejecutamos para PRs que:
+    # - fueron abiertos/reabiertos
+    # - o fueron cerrados por merge
+    if: |
+      github.event.action == 'opened' ||
+      github.event.action == 'reopened' ||
+      (
+        github.event.action == 'closed' &&
+        github.event.pull_request.merged == true
+      )
+
     runs-on: ubuntu-latest
 
     steps:
-      - name: Update HU status
+      - name: Update HU status and environment
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PROJECT_TOKEN }}
 
           script: |
             const PROJECT_ID = 'PVT_kwHOCkkGd84Az9vm';
-            const STATUS_FIELD = 'PVTSSF_lAHOCkkGd84Az9vmzgpq9ys';
+
+            // Project fields
+            const STATUS_FIELD =
+              'PVTSSF_lAHOCkkGd84Az9vmzgpq9ys';
+
+            const ENVIRONMENT_FIELD =
+              'PVTSSF_lAHOCkkGd84Az9vmzhaaI9k';
+
+            // Status options
             const STATUS_IN_REVIEW = '61d25113';
+            const STATUS_IN_PROGRESS = '47fc9ee4';
+            const STATUS_DONE = '98236657';
+
+            // Environment options
+            const ENV_DEV = '90d0f115';
+            const ENV_QA = 'ffaf1160';
+            const ENV_PRODUCTION = '9266a477';
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
             const pr = context.payload.pull_request;
+
             const base = pr.base.ref;
+            const action = context.payload.action;
+            const merged = pr.merged === true;
 
             core.info(`PR #${pr.number}`);
             core.info(`Repository: ${owner}/${repo}`);
             core.info(`Base branch: ${base}`);
-            core.info(`Action: ${context.payload.action}`);
+            core.info(`Action: ${action}`);
+            core.info(`Merged: ${merged}`);
 
-            if (!['dev', 'qa', 'main'].includes(base)) {
-              core.info(`La rama '${base}' no está contemplada.`);
+            // ---------------------------------------------------------
+            // Determinar Environment según la rama destino
+            // ---------------------------------------------------------
+
+            let environmentOption;
+
+            switch (base) {
+              case 'dev':
+                environmentOption = ENV_DEV;
+                break;
+
+              case 'qa':
+                environmentOption = ENV_QA;
+                break;
+
+              case 'main':
+                environmentOption = ENV_PRODUCTION;
+                break;
+
+              default:
+                core.info(
+                  `La rama '${base}' no está contemplada.`
+                );
+                return;
+            }
+
+            // ---------------------------------------------------------
+            // Determinar Status según el evento
+            // ---------------------------------------------------------
+
+            let statusOption;
+            let statusName;
+
+            if (action === 'opened' || action === 'reopened') {
+              statusOption = STATUS_IN_REVIEW;
+              statusName = 'In Review';
+
+            } else if (action === 'closed' && merged) {
+
+              // Para esta prueba:
+              // dev y qa -> In Progress
+              // main      -> Done
+
+              switch (base) {
+                case 'dev':
+                  statusOption = STATUS_IN_PROGRESS;
+                  statusName = 'In Progress';
+                  break;
+
+                case 'qa':
+                  statusOption = STATUS_IN_PROGRESS;
+                  statusName = 'In Progress';
+                  break;
+
+                case 'main':
+                  statusOption = STATUS_DONE;
+                  statusName = 'Done';
+                  break;
+
+                default:
+                  core.info(
+                    `No existe regla de merge para '${base}'.`
+                  );
+                  return;
+              }
+
+            } else {
+              core.info(
+                `Evento no requiere actualización.`
+              );
               return;
             }
 
-            // Buscar una referencia del tipo:
-            // github-project-test#5
+            core.info(
+              `Status seleccionado: ${statusName}`
+            );
+
+            // ---------------------------------------------------------
+            // Buscar Issue/HU referenciada en el PR
+            // Formato esperado:
+            //
+            // github-project-test#9
+            // ---------------------------------------------------------
+
             const text = `${pr.title}\n${pr.body || ''}`;
-            const regex = new RegExp(`${repo}#(\\d+)`, 'g');
+
+            const regex =
+              new RegExp(`${repo}#(\\d+)`, 'g');
 
             const issueNumbers = new Set();
+
             let match;
 
             while ((match = regex.exec(text)) !== null) {
-              issueNumbers.add(parseInt(match[1], 10));
+              issueNumbers.add(
+                parseInt(match[1], 10)
+              );
             }
 
             if (!issueNumbers.size) {
@@ -57,7 +170,16 @@ jobs:
               return;
             }
 
-            const updateField = async (itemId, fieldId, optionId) => {
+            // ---------------------------------------------------------
+            // Función para actualizar un campo Single Select
+            // ---------------------------------------------------------
+
+            const updateField = async (
+              itemId,
+              fieldId,
+              optionId
+            ) => {
+
               await github.graphql(
                 `
                 mutation(
@@ -91,63 +213,123 @@ jobs:
               );
             };
 
+            // ---------------------------------------------------------
+            // Procesar cada Issue encontrada
+            // ---------------------------------------------------------
+
             for (const issueNumber of issueNumbers) {
-              const result = await github.graphql(
-                `
-                query(
-                  $owner: String!,
-                  $repo: String!,
-                  $number: Int!
-                ) {
-                  repository(owner: $owner, name: $repo) {
-                    issue(number: $number) {
-                      id
-                      projectItems(first: 50) {
-                        nodes {
+
+              try {
+
+                const result =
+                  await github.graphql(
+                    `
+                    query(
+                      $owner: String!,
+                      $repo: String!,
+                      $number: Int!
+                    ) {
+                      repository(
+                        owner: $owner,
+                        name: $repo
+                      ) {
+                        issue(number: $number) {
                           id
-                          project {
-                            id
+
+                          projectItems(first: 50) {
+                            nodes {
+                              id
+
+                              project {
+                                id
+                              }
+                            }
                           }
                         }
                       }
                     }
-                  }
+                    `,
+                    {
+                      owner,
+                      repo,
+                      number: issueNumber
+                    }
+                  );
+
+                const issue =
+                  result.repository.issue;
+
+                if (!issue) {
+                  core.warning(
+                    `Issue #${issueNumber} no existe.`
+                  );
+                  continue;
                 }
-                `,
-                {
-                  owner,
-                  repo,
-                  number: issueNumber
+
+                // -------------------------------------------------------
+                // Buscar la tarjeta de esa Issue dentro de nuestro Project
+                // -------------------------------------------------------
+
+                const item =
+                  issue.projectItems.nodes.find(
+                    item =>
+                      item.project.id === PROJECT_ID
+                  );
+
+                if (!item) {
+                  core.warning(
+                    `Issue #${issueNumber} no está en el Project.`
+                  );
+                  continue;
                 }
-              );
 
-              const issue = result.repository.issue;
-
-              if (!issue) {
-                core.warning(
-                  `Issue #${issueNumber} no existe.`
+                core.info(
+                  `Issue #${issueNumber} encontrada en el Project.`
                 );
-                continue;
-              }
 
-              const item = issue.projectItems.nodes.find(
-                item => item.project.id === PROJECT_ID
-              );
-
-              if (!item) {
-                core.warning(
-                  `Issue #${issueNumber} no está en el Project.`
+                core.info(
+                  `Project Item ID: ${item.id}`
                 );
-                continue;
+
+                // -------------------------------------------------------
+                // Actualizar Status
+                // -------------------------------------------------------
+
+                await updateField(
+                  item.id,
+                  STATUS_FIELD,
+                  statusOption
+                );
+
+                core.info(
+                  `Issue #${issueNumber}: Status = ${statusName}`
+                );
+
+                // -------------------------------------------------------
+                // Actualizar Environment
+                // -------------------------------------------------------
+
+                await updateField(
+                  item.id,
+                  ENVIRONMENT_FIELD,
+                  environmentOption
+                );
+
+                const environmentName =
+                  base === 'dev'
+                    ? 'Dev'
+                    : base === 'qa'
+                      ? 'QA'
+                      : 'Production';
+
+                core.info(
+                  `Issue #${issueNumber}: Environment = ${environmentName}`
+                );
+
+              } catch (error) {
+
+                core.warning(
+                  `Issue #${issueNumber}: ${error.message}`
+                );
               }
-
-              await updateField(
-                item.id,
-                STATUS_FIELD,
-                STATUS_IN_REVIEW
-              );
-
-              core.info(
-                `Issue #${issueNumber}: Status = In Review`
-              );
             }
