@@ -1,0 +1,209 @@
+name: Project Sync
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - closed
+
+jobs:
+  sync-project:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Sync Project
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          PROJECT_ID: PVT_kwHOCkkGd84Az9vm
+          STATUS_FIELD_ID: PVTSSF_lAHOCkkGd84Az9vmzgpq9ys
+          ENVIRONMENT_FIELD_ID: PVTSSF_lAHOCkkGd84Az9vmzhaaI9k
+
+          STATUS_BACKLOG: f75ad846
+          STATUS_READY: d6c8a87e
+          STATUS_IN_PROGRESS: 47fc9ee4
+          STATUS_IN_REVIEW: 61d25113
+          STATUS_DONE: 98236657
+
+          ENV_DEV: 90d0f115
+          ENV_QA: ffaf1160
+          ENV_PRODUCTION: 9266a477
+
+        run: |
+          set -e
+
+          echo "PR #${{ github.event.pull_request.number }}"
+          echo "Base branch: ${{ github.event.pull_request.base.ref }}"
+          echo "Action: ${{ github.event.action }}"
+          echo "Merged: ${{ github.event.pull_request.merged }}"
+
+          BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          ACTION="${{ github.event.action }}"
+          MERGED="${{ github.event.pull_request.merged }}"
+
+          STATUS_ID=""
+          ENVIRONMENT_ID=""
+
+          # ---------------------------------------------------------
+          # Determinar Environment según la rama destino
+          # ---------------------------------------------------------
+          case "$BASE_BRANCH" in
+            dev)
+              ENVIRONMENT_ID="$ENV_DEV"
+              ;;
+            qa)
+              ENVIRONMENT_ID="$ENV_QA"
+              ;;
+            main)
+              ENVIRONMENT_ID="$ENV_PRODUCTION"
+              ;;
+            *)
+              echo "Rama destino no contemplada: $BASE_BRANCH"
+              exit 0
+              ;;
+          esac
+
+          # ---------------------------------------------------------
+          # Determinar Status
+          # ---------------------------------------------------------
+          if [ "$ACTION" = "opened" ] || [ "$ACTION" = "reopened" ]; then
+            STATUS_ID="$STATUS_IN_REVIEW"
+
+          elif [ "$ACTION" = "closed" ] && [ "$MERGED" = "true" ]; then
+            case "$BASE_BRANCH" in
+              dev|qa)
+                STATUS_ID="$STATUS_IN_PROGRESS"
+                ;;
+              main)
+                STATUS_ID="$STATUS_DONE"
+                ;;
+            esac
+
+          else
+            echo "Evento no requiere actualización."
+            exit 0
+          fi
+
+          echo "Status ID: $STATUS_ID"
+          echo "Environment ID: $ENVIRONMENT_ID"
+
+          # ---------------------------------------------------------
+          # Obtener Issue asociada al PR
+          # ---------------------------------------------------------
+          BODY='${{ github.event.pull_request.body }}'
+
+          ISSUE_NUMBER=$(echo "$BODY" | grep -oE 'Refs #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+
+          if [ -z "$ISSUE_NUMBER" ]; then
+            echo "No se encontró una referencia 'Refs #<numero>' en el PR."
+            exit 0
+          fi
+
+          echo "Issue encontrada: #$ISSUE_NUMBER"
+
+          # ---------------------------------------------------------
+          # Obtener Node ID de la Issue
+          # ---------------------------------------------------------
+          ISSUE_NODE_ID=$(gh api graphql \
+            -f query='
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $number) {
+                    id
+                  }
+                }
+              }' \
+            -f owner="${{ github.repository_owner }}" \
+            -f repo="${{ github.event.repository.name }}" \
+            -F number="$ISSUE_NUMBER" \
+            --jq '.data.repository.issue.id')
+
+          echo "Issue Node ID: $ISSUE_NODE_ID"
+
+          # ---------------------------------------------------------
+          # Obtener Item ID de la Issue dentro del Project
+          # ---------------------------------------------------------
+          ITEM_ID=$(gh api graphql \
+            -f query='
+              query($projectId: ID!, $issueId: ID!) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    items(first: 100) {
+                      nodes {
+                        id
+                        content {
+                          ... on Issue {
+                            id
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }' \
+            -f projectId="$PROJECT_ID" \
+            -f issueId="$ISSUE_NODE_ID" \
+            --jq ".data.node.items.nodes[] | select(.content.id == \"$ISSUE_NODE_ID\") | .id")
+
+          if [ -z "$ITEM_ID" ]; then
+            echo "La Issue #$ISSUE_NUMBER no está agregada al Project."
+            exit 1
+          fi
+
+          echo "Project Item ID: $ITEM_ID"
+
+          # ---------------------------------------------------------
+          # Actualizar Status
+          # ---------------------------------------------------------
+          gh api graphql \
+            -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: {
+                      singleSelectOptionId: $optionId
+                    }
+                  }
+                ) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }' \
+            -f projectId="$PROJECT_ID" \
+            -f itemId="$ITEM_ID" \
+            -f fieldId="$STATUS_FIELD_ID" \
+            -f optionId="$STATUS_ID"
+
+          echo "Status actualizado."
+
+          # ---------------------------------------------------------
+          # Actualizar Environment
+          # ---------------------------------------------------------
+          gh api graphql \
+            -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: {
+                      singleSelectOptionId: $optionId
+                    }
+                  }
+                ) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }' \
+            -f projectId="$PROJECT_ID" \
+            -f itemId="$ITEM_ID" \
+            -f fieldId="$ENVIRONMENT_FIELD_ID" \
+            -f optionId="$ENVIRONMENT_ID"
+
+          echo "Environment actualizado."
