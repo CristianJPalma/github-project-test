@@ -522,3 +522,4 @@ Done / Production
 El objetivo es que el tablero muestre siempre **qué estado tiene la HU y cuál es la siguiente etapa de integración**, evitando que una HU que ya terminó en `dev` siga apareciendo como si todavía estuviera desarrollándose en `dev`.
 
 Cambio de Hu-005
+hu-006 prueba workflow approved
